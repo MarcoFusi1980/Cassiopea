@@ -1,0 +1,373 @@
+
+---
+  title: "16SrRNA metabarcoding analysis of Cassiopea bacterial microbiome exposed to thermal stress at different level of oxygen saturation"
+  output: "html_document"
+---
+## DataRepository
+ to be included
+ 
+## Script Repository
+TBD
+ 
+## Authors: Marco Fusi and Ramona Marasco
+
+## Experimental Design:
+Response Variable: Bacterial OTUs_table (matrix of count data)
+Explanatory variable - Fixed Effect: 
+      1) Temperate: continuous
+      2) Oxygen: Categorical, 2 levels: Normoxia and Hyperoxia
+Explanatory variable - Random Effect: 
+      1) Aquarium replicate.
+
+      
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+## Package required
+```{r}
+# Packages needed to run this code
+library(vegan)
+library(tidyverse)
+library('BiodiversityR')
+library(devtools)
+library(pairwiseAdonis)
+library(phyloseq)
+library(mvabund)
+library(ggplot2)
+library(gridExtra)
+library(cowplot)
+library(rmarkdown)
+library(RVAideMemoire)
+library(OTUtable)
+library(randomForest)
+library(dplyr)
+library(ecodist)
+library(metacoder)
+```
+
+## Loading and testing the difference of bacterial community amonf two different level of oxygen and a inceasing ramp of temperature 
+```{r}
+setwd("~/Dropbox/Articoli/Cassiopea/01_Betadiversity/")
+# LOAD DATA AND PREPARE IT FOR analysis
+otu<-read.table("OTU_table_def.txt",header=T,sep="\t",row.names = 1)
+map<-read.table("map.txt",header=T,sep="\t",row.names = 1)
+
+# Filtering the otu table
+otu_t<-otu[,c(1:115)]
+otu_filtered<- as.data.frame(t(filter_taxa(otu_t, abundance = 0.001,persistence = 2)))
+
+
+sum_otu<-rowSums(otu_filtered)
+sort(sum_otu)
+
+# The total reads per samples range from 34 to 497000. We discard the sample ND2c that have only 34 reads
+otu_filtered<-otu_filtered%>% filter(row.names(otu_filtered) !="ND2c")
+map_filtered<-map%>% filter(row.names(map) !="ND2c")
+#We rarefy to the lowest number using the function ps.rarefied from phyloseq functin
+otu_filtered_rarefied<-as.data.frame(otu_filtered)
+
+
+write.table(otu_filtered_rarefied,"Step_01_otu_filtered.txt",sep='\t')
+
+rarecurve(t(otu_filtered_rarefied))
+
+otu_filtered_rarefied<-otu_filtered_rarefied[order(row.names(otu_filtered_rarefied)), ]
+map_filtered<-map_filtered[order(row.names(map_filtered)), ]
+
+
+row.names(otu_filtered_rarefied) == row.names(map_filtered)
+OTU = otu_table(otu_filtered_rarefied, taxa_are_rows = FALSE)
+samples = sample_data(map_filtered)
+carbom <- phyloseq(OTU, samples)
+ps.rarefied = rarefy_even_depth(carbom, rngseed=1, sample.size=min(sample_sums(carbom)), replace=F)
+
+#Retrieve the otu table from the phyloseq object dataframe for further elaboration
+otu_rarefied<- as.data.frame(otu_table(ps.rarefied))
+rarecurve(otu_rarefied)
+write.table(otu_rarefied,"Step_2otu_filtered_rarefied.txt",sep='\t')
+otu_rarefied_tax<-as.data.frame(t(otu_rarefied))
+
+
+
+for (i in 1:nrow(otu_rarefied_tax)) {
+  row_name<-row.names(otu_rarefied_tax[i,])
+  column_taxa<-otu%>% filter(row.names(otu) ==row_name)
+  if (nrow(column_taxa) !=0) {
+    otu_rarefied_tax$k[i]<-column_taxa$k
+    otu_rarefied_tax$p[i]<-column_taxa$p
+    otu_rarefied_tax$c[i]<-column_taxa$c
+    otu_rarefied_tax$o[i]<-column_taxa$o
+    otu_rarefied_tax$f[i]<-column_taxa$f
+    otu_rarefied_tax$g[i]<-column_taxa$g
+    }
+
+}
+write.table(otu_rarefied_tax,"Step_2otu_filtered_rarefied_tax.txt",sep='\t')
+
+
+```
+## Preliminary Visualisation and testing the differenze among the Type samples
+
+```{r}
+otu_rarefied_abund<-mvabund(otu_filtered_rarefied)
+
+
+ordination_abund<- pco(vegdist(otu_rarefied_abund, method = "bray"), negvals = "zero", dround = 0)
+
+# data frames for plotting
+site_res <- data.frame(ordination_abund$vectors[,1],ordination_abund$vectors[,2],map_filtered$Type)
+names(site_res)
+colnames(site_res)[1]<-"Factor1"
+colnames(site_res)[2]<-"Factor2"
+colnames(site_res)[3]<-"Type"
+
+
+ggplot(aes(x=Factor1,y=Factor2,color=Type),data=site_res)+
+  geom_point()+
+  stat_ellipse() +#sites
+  #geom_text(aes(x = Factor1*alpha, y = Factor2*alpha,label = species),data=sp_res)+ #species
+  theme_classic() +ylab("PCoA 2") +xlab("PCoA 1")+
+  labs(color="Samples type ordination")+theme(legend.position="bottom")
+
+#sp_res <- data.frame(ordination_abund$values[,1],ordination_abund$vectors[,2],
+#                     species = colnames(tacoi_abund_mv[,c(2:1192)]))
+#alpha= 2.5 # scaling parameter
+
+otu_mglm_general<-manyglm(otu_rarefied_abund~map_filtered$Type)
+ototu_mglm_general<-anova(otu_mglm_general,show.time="all")
+
+```
+
+##  Visualisation and testing the differenze among the temprature and Oxygen
+
+```{r}
+
+otu_rarefied<-otu_rarefied[order(row.names(otu_rarefied)), ]
+map_filtered<-map_filtered[order(row.names(map_filtered)), ]
+
+
+
+otu_rarefied_test<-otu_rarefied%>%filter(map_filtered$Type=='Tentacle')
+map_rarefied_test<-map_filtered%>%filter(map_filtered$Type=='Tentacle')
+
+otu_rarefied_test_r = otu_rarefied_test[,colSums(otu_rarefied_test) > 0]
+
+write.table(otu_rarefied_test_r,"Step_3_otu_filtered_rarefied_tentacle.txt",sep='\t')
+write.table(map_rarefied_test,"map_filtered_rarefied_tentacle.txt",sep='\t')
+
+otu_rarefied_test_log<-log10(otu_rarefied_test_r+1)
+write.table(otu_rarefied_test_log,"otu_filtered_rarefied_tentacle_log.txt",sep='\t')
+
+
+otu_rarefied_test_normoxia<-otu_rarefied_test_log%>%filter(map_rarefied_test$Treatment=='Normoxia')
+otu_rarefied_test_hyperoxia<-otu_rarefied_test_log%>%filter(map_rarefied_test$Treatment=='Hyperoxia')
+
+dist_norm<-vegdist(otu_rarefied_test_normoxia,method="bray")
+dist_hyper<-vegdist(otu_rarefied_test_hyperoxia,method="bray")
+
+
+bray <- as.matrix(dist_norm)
+bray[upper.tri(bray)] <- NA
+diag(bray) <- NA
+
+# Convert distance matrix into data.frame
+bray <- reshape2::melt(bray, varnames = c("id1", "id2"))
+# Remove NAs
+bray <- bray[complete.cases(bray), ]
+head(bray)
+write.table(bray,"BC_distance_normoxia_log.txt",sep='\t')
+
+# data frames for plotting taxonomy
+otu_rarefied_test_tax<-as.data.frame(t(otu_rarefied_test))
+
+for (i in 1:nrow(otu_rarefied_test_tax)) {
+  row_name<-row.names(otu_rarefied_test_tax[i,])
+  column_taxa<-otu%>% filter(row.names(otu) ==row_name)
+  if (nrow(column_taxa) !=0) {
+    otu_rarefied_test_tax$k[i]<-column_taxa$k
+    otu_rarefied_test_tax$p[i]<-column_taxa$p
+    otu_rarefied_test_tax$c[i]<-column_taxa$c
+    otu_rarefied_test_tax$o[i]<-column_taxa$o
+    otu_rarefied_test_tax$f[i]<-column_taxa$f
+    otu_rarefied_test_tax$g[i]<-column_taxa$g
+    }
+
+}
+write.table(otu_rarefied_test_tax,"otu_rarefied_test_tax.txt",sep='\t')
+
+
+otu_rarefied_abund_test<-mvabund(otu_rarefied_test_r)
+
+ordination_abund<- pco(vegdist(otu_rarefied_abund_test, method = "bray"), negvals = "zero", dround = 0)
+
+# data frames for plotting
+site_res <- data.frame(ordination_abund$vectors[,1],ordination_abund$vectors[,2],map_rarefied_test$Temperature,map_rarefied_test$Treatment)
+names(site_res)
+colnames(site_res)[1]<-"Factor1"
+colnames(site_res)[2]<-"Factor2"
+colnames(site_res)[3]<-"Temperature"
+colnames(site_res)[4]<-"Oxygen"
+
+
+
+ggplot(aes(x=Factor1,y=Factor2,color=as.numeric(Temperature),shape=Oxygen),data=site_res)+
+  geom_point()+
+  scale_color_gradient(low = "forestgreen", high = "red")+
+  #geom_text(aes(x = Factor1*alpha, y = Factor2*alpha,label = species),data=sp_res)+ #species
+  theme_classic() +ylab("PCoA 2") +xlab("PCoA 1")+
+  labs(color="Samples type ordination")+theme(legend.position="bottom")
+
+#sp_res <- data.frame(ordination_abund$values[,1],ordination_abund$vectors[,2],
+#                     species = colnames(tacoi_abund_mv[,c(2:1192)]))
+#alpha= 2.5 # scaling parameter
+
+
+otu_mglm2<-manyglm(otu_rarefied_abund_test~map_rarefied_test$Temperature*map_rarefied_test$Treatment)
+oto_mglm_anova2<-anova(otu_mglm2,show.time="all",p.uni="unadjusted",block = 'tank')
+oto_mglm_anova2$table
+
+
+model<-oto_mglm_anova2
+
+
+
+a<-data.frame(t(model$uni.test))
+b<-data.frame(t(model$uni.p))
+
+head(a)
+
+df<-data.frame((cbind(rownames(a),a[,2],b[,2])))
+
+head(df)
+colnames(df)<-c("OTU","Deviance","p")
+head(df)
+df_ordered<-df[order(df$p),]
+head(df_ordered)
+write.table(df_ordered, "anova_tentacles.txt",sep='\t',row.names = FALSE)
+head(df_ordered)
+
+best.r.sq(otu_rarefied_abund_test~map_rarefied_test$Temperature*map_rarefied_test$Treatment)
+
+
+
+#Selection of the most important OTUs determineind the diffeence among Temperature and oxygen based on the manyglm
+
+
+
+
+
+
+
+
+
+
+otu_discriminant<-otu_rarefied_test%>%select(c("OTU_8", "OTU_121", "OTU_27", "OTU_6", "OTU_12", "OTU_28", "OTU_4", "OTU_37", "OTU_56", "OTU_61"))
+
+
+#Plot of the 10 most important OTU discriminating the temperature/oxygen treatment based on the higher deviance explained.
+names(otu_discriminant)
+
+OTU8<-ggplot(otu_discriminant,aes(y=otu_discriminant$OTU_8,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU121<-ggplot(otu_discriminant,aes(y=OTU_121,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU27<-ggplot(otu_discriminant,aes(y=otu_discriminant$OTU_27,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU6<-ggplot(otu_discriminant,aes(y=OTU_6,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU12<-ggplot(otu_discriminant,aes(y=OTU_12,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU28<-ggplot(otu_discriminant,aes(y=otu_discriminant$OTU_28,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU4<-ggplot(otu_discriminant,aes(y=OTU_4,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU37<-ggplot(otu_discriminant,aes(y=OTU_37,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU56<-ggplot(otu_discriminant,aes(y=OTU_56,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+OTU61<-ggplot(otu_discriminant,aes(y=OTU_61,x=as.numeric(map_rarefied_test$Temperature),color=map_rarefied_test$Treatment))+geom_point()+geom_smooth(method = "loess")+theme(legend.position = "none")+xlab("Temperature C")
+
+grid.arrange(OTU8,OTU121,OTU27,OTU6,OTU12,OTU28,OTU4,OTU37,OTU56,OTU61)
+
+```
+
+## Metacoder
+```{r}
+meta_otu<-read.table("Step_3_otu_filtered_rarefied_tentacle_tax_metacoder3_30.txt",header=T,sep="\t",row.names = 1)
+
+meta_map<-read.table("map_tentacle_def_30.txt",header=T,sep="\t")
+
+
+obj <- parse_tax_data(meta_otu,
+                      class_cols = "lineage", # the column that contains taxonomic information
+                      class_sep = ";", # The character used to separate taxa in the classification
+                      class_regex = "^(.+)__(.+)$", # Regex identifying where the data for each taxon is
+                      class_key = c(tax_rank = "info", # A key describing each regex capture group
+                                    tax_name = "taxon_name"))
+obj$data$tax_abund <- calc_taxon_abund(obj, "tax_data",
+                                       cols = meta_otu$sample_id)
+
+obj$data$tax_occ <- calc_n_samples(obj, "tax_abund", groups = meta_map$Treatment, cols = meta_otu$sample_id)
+
+heat_tree(obj, 
+          node_label = taxon_names,
+          node_size = n_obs,
+          node_color = Hyperoxia, 
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Samples with reads",
+          layout = "davidson-harel", # The primary layout algorithm
+          initial_layout = "reingold-tilford") # The layout algorithm that initializes node locations
+obj$data$diff_table <- compare_groups(obj,
+                                      dataset = "tax_abund",
+                                       cols = meta_map$Sample, # What columns of sample data to use
+                                      groups = meta_map$Treatment) # What category each sample is assigned to
+obj$data$diff_table[is.na(obj$data$diff_table)] <- 1 #avoid Null values interfere with the script
+mat_notgood <- filter(obj$data$diff_table , obj$data$diff_table$wilcox_p_value > 0.05 )
+dont_print <-mat_notgood$taxon_id
+set.seed(999)
+plot_oxy<-heat_tree(obj, 
+          node_label = ifelse(obj$data$diff_table$taxon_id %in% dont_print,"",taxon_names),
+          node_size = n_obs, # n_obs is a function that calculates, in this case, the number of OTUs per taxon
+          node_color = ifelse(obj$data$diff_table$wilcox_p_value >0.05, "gray",log2_median_ratio), # A column from `obj$data$diff_table`
+          node_color_interval = c(-2, 2), # The range of `log2_median_ratio` to display
+          node_color_range = c("forestgreen", "gray", "deepskyblue2"), # The color palette used
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio",
+          node_label_size_range = c(0.02, 0.02),
+          layout = "davidson-harel", # The primary layout algorithm
+          initial_layout = "reingold-tilford", # The layout algorithm that initializes node locations
+output_file = "differential_heat_tree_30.pdf") 
+
+plot_oxy
+
+
+
+## Run in case of multiple comparison
+
+
+obj$data$diff_table$wilcox_p_value <- p.adjust(obj$data$diff_table$wilcox_p_value,
+                                               method = "fdr")
+obj$data$diff_table$log2_median_ratio[obj$data$diff_table$wilcox_p_value > 0.05] <- 0
+
+obj$data$diff_table <- compare_groups(obj, dataset = "tax_abund",
+                                      cols = meta_map$Sample, # What columns of sample data to use
+                                      groups = meta_map$Treatment) # What category each sample is assigned to
+set.seed(999)
+heat_tree_matrix(obj,
+                 data = "diff_table",
+                 node_size = n_obs, # n_obs is a function that calculates, in this case, the number of OTUs per taxon
+                 node_label = taxon_names,
+                 node_color = log2_median_ratio, # A column from `obj$data$diff_table`
+                 node_color_range = diverging_palette(), # The built-in palette for diverging data
+                 node_color_trans = "linear", # The default is scaled by circle area
+                 node_color_interval = c(-3, 3), # The range of `log2_median_ratio` to display
+                 edge_color_interval = c(-3, 3), # The range of `log2_median_ratio` to display
+                 node_size_axis_label = "Number of OTUs",
+                 node_color_axis_label = "Log2 ratio median proportions",
+                 layout = "davidson-harel", # The primary layout algorithm
+                 initial_layout = "reingold-tilford", # The layout algorithm that initializes node locations
+                 output_file = "differential_heat_tree.pdf") # Saves the plot as a pdf file
+
+
+```
+
+
+## RData save and load
+```{r}
+save.image("Cassiopea_microbiome.Rdata")
+#load("Cassiopea_microbiome.Rdata")
+
+
+```
